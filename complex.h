@@ -33,7 +33,7 @@ public:
 
 	//   Constructors
 	complex(): m_re(0.), m_im(0.) {}
-	complex(FLT re, FLT im): m_re(re), m_im(im) {}
+	constexpr complex(FLT re, FLT im): m_re(re), m_im(im) {}
 	complex(FLT val): m_re(val), m_im(0.) {}
 
 	//   Assignment
