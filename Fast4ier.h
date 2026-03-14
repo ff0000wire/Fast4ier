@@ -8,6 +8,7 @@
 //   http://www.librow.com/articles/article-10
 
 //   Reworked from original from LIBROW (info above) to Arduino Lib in c++
+//   Optimized with precomputed twiddle factors and bit-reversal LUT
 
 #ifndef Fast4ier_h
 #define Fast4ier_h
@@ -16,9 +17,15 @@
 #include <complex.h>
 //   Include math library
 #include "math.h"
+#include <stdint.h>
 class Fast4
 {
 public:
+	//   Precompute twiddle factors and bit-reversal table for sizes up to max_n.
+	//   Must be called once before any FFT/IFFT calls.
+	//   max_n must be a power of 2, max 65536.
+	static void init(unsigned int max_n);
+
 	//   FORWARD FOURIER TRANSFORM
 	//     Input  - input data
 	//     Output - transform result
@@ -53,6 +60,13 @@ private:
 
 	//   Scaling of inverse FFT result
 	static void Scale(complex *const Data, const unsigned int N);
+
+	// Precomputed tables
+	// Only forward twiddles stored; inverse = conjugate (negate im) at use time
+	static complex *_twiddle;       // Forward twiddle factors, max_n-1 entries
+	static uint16_t *_bitrev;       // Bit-reversal permutation indices
+	static unsigned int _max_n;     // Maximum FFT size tables are computed for
+	static bool _initialized;
 };
 
 #endif
