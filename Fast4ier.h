@@ -8,7 +8,8 @@
 //   http://www.librow.com/articles/article-10
 
 //   Reworked from original from LIBROW (info above) to Arduino Lib in c++
-//   Optimized with precomputed twiddle factors and bit-reversal LUT
+//   Optimized with precomputed twiddle factors
+//   Bit-reversal uses hardware RBIT instruction (ARM) or software fallback
 
 #ifndef Fast4ier_h
 #define Fast4ier_h
@@ -50,6 +51,17 @@ public:
 	//     Scale - if to scale result
 	static bool IFFT(complex *const Data, const unsigned int N, const bool Scale = true);
 
+	//   FORWARD FFT using RBIT hardware instruction for bit-reversal (no LUT needed)
+	//     Data - both input data and output
+	//     N    - length of input data
+	static bool FFT_rbit(complex *const Data, const unsigned int N);
+
+	//   INVERSE FFT using RBIT hardware instruction for bit-reversal (no LUT needed)
+	//     Data  - both input data and output
+	//     N     - length of both input data and result
+	//     Scale - if to scale result
+	static bool IFFT_rbit(complex *const Data, const unsigned int N, const bool Scale = true);
+
 private:
 	//   Rearrange function and its inplace version
 	static void Rearrange(const complex *const Input, complex *const Output, const unsigned int N);
@@ -61,10 +73,9 @@ private:
 	//   Scaling of inverse FFT result
 	static void Scale(complex *const Data, const unsigned int N);
 
-	// Precomputed tables
+	// Precomputed twiddle factors
 	// Only forward twiddles stored; inverse = conjugate (negate im) at use time
 	static complex *_twiddle;       // Forward twiddle factors, max_n-1 entries
-	static uint16_t *_bitrev;       // Bit-reversal permutation indices
 	static unsigned int _max_n;     // Maximum FFT size tables are computed for
 	static bool _initialized;
 };

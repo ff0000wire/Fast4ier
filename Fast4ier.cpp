@@ -8,7 +8,8 @@
 //   http://www.librow.com/articles/article-10
 
 //   Reworked from original from LIBROW (info above) to Arduino Lib in c++
-//   Optimized with precomputed twiddle factors and bit-reversal LUT
+//   Optimized with precomputed twiddle factors
+//   Bit-reversal uses hardware RBIT instruction (ARM) or software fallback
 
 //   Include declaration file
 #include <Fast4ier.h>
@@ -16,16 +17,13 @@
 
 // Static member definitions
 complex *Fast4::_twiddle = nullptr;
-uint16_t *Fast4::_bitrev = nullptr;
 unsigned int Fast4::_max_n = 0;
 bool Fast4::_initialized = false;
 
-//   Precompute twiddle factors and bit-reversal table.
+//   Precompute twiddle factors.
 //
 //   Memory usage for max_n=8192:
 //     twiddle: (8192-1) * 8 bytes = ~64KB
-//     bitrev:  8192 * 2 bytes     = ~16KB
-//     Total: ~80KB
 //
 //   Only forward twiddles are stored. For IFFT, the conjugate
 //   (negate imaginary part) is applied at use time — a single
@@ -35,10 +33,16 @@ void Fast4::init(unsigned int max_n)
 	if (_initialized) {
 		if (_max_n == max_n) return;
 		free(_twiddle);
-		free(_bitrev);
+		_twiddle = nullptr;
 	}
 
 	_max_n = max_n;
+
+	// max_n == 0 means deinit: free tables and use fallback paths
+	if (max_n == 0) {
+		_initialized = false;
+		return;
+	}
 
 	// Allocate twiddle table: total entries = max_n - 1
 	// Layout: for stage Step=1,2,4,...,max_n/2 store Step factors
@@ -57,23 +61,6 @@ void Fast4::init(unsigned int max_n)
 			_twiddle[offset + k] = complex(cos(angle), sin(angle));
 		}
 		offset += Step;
-	}
-
-	// Allocate and compute bit-reversal LUT (uint16_t saves half the RAM)
-	_bitrev = (uint16_t *)malloc(max_n * sizeof(uint16_t));
-	unsigned int bits = 0;
-	for (unsigned int tmp = max_n; tmp > 1; tmp >>= 1) bits++;
-
-	for (unsigned int i = 0; i < max_n; ++i)
-	{
-		unsigned int reversed = 0;
-		unsigned int val = i;
-		for (unsigned int b = 0; b < bits; ++b)
-		{
-			reversed = (reversed << 1) | (val & 1);
-			val >>= 1;
-		}
-		_bitrev[i] = (uint16_t)reversed;
 	}
 
 	_initialized = true;
@@ -154,80 +141,43 @@ bool Fast4::IFFT(complex *const Data, const unsigned int N, const bool Scale /* 
 	return true;
 }
 
-//   Rearrange function using precomputed bit-reversal LUT
-void Fast4::Rearrange(const complex *const Input, complex *const Output, const unsigned int N)
+//   Compute bit-reversed index using hardware RBIT or software fallback
+static inline unsigned int bitrev(unsigned int i, unsigned int bits)
 {
-	if (_initialized && N <= _max_n)
+#ifdef BUILD_NATIVE
+	// Software bit-reversal for x86/host builds
+	unsigned int j = 0;
+	for (unsigned int b = 0; b < bits; b++)
 	{
-		// _bitrev is computed for _max_n bits. For smaller N, multiply index by
-		// shift=_max_n/N to pad low bits with zeros before lookup. After bit
-		// reversal those zeros become high bits, producing bitrev_log2(N)(i).
-		const unsigned int shift = _max_n / N;
-		for (unsigned int i = 0; i < N; ++i)
-			Output[_bitrev[i * shift]] = Input[i];
+		j = (j << 1) | (i & 1);
+		i >>= 1;
 	}
-	else
-	{
-		//   Data entry position
-		unsigned int Target = 0;
-		//   Process all positions of input signal
-		for (unsigned int Position = 0; Position < N; ++Position)
-		{
-			//  Set data entry
-			Output[Target] = Input[Position];
-			//   Bit mask
-			unsigned int Mask = N;
-			//   While bit is set
-			while (Target & (Mask >>= 1))
-				//   Drop bit
-				Target &= ~Mask;
-			//   The current bit is 0 - set it
-			Target |= Mask;
-		}
-	}
+	return j;
+#else
+	return __builtin_arm_rbit(i) >> (32 - bits);
+#endif
 }
 
-//   Inplace version of rearrange function using precomputed bit-reversal LUT
+//   Out-of-place rearrange using bit-reversal
+void Fast4::Rearrange(const complex *const Input, complex *const Output, const unsigned int N)
+{
+	const unsigned int bits = __builtin_ctz(N);
+	for (unsigned int i = 0; i < N; ++i)
+		Output[bitrev(i, bits)] = Input[i];
+}
+
+//   Inplace rearrange using bit-reversal
 void Fast4::Rearrange(complex *const Data, const unsigned int N)
 {
-	if (_initialized && N <= _max_n)
+	const unsigned int bits = __builtin_ctz(N);
+	for (unsigned int i = 0; i < N; ++i)
 	{
-		const unsigned int shift = _max_n / N;
-		for (unsigned int i = 0; i < N; ++i)
+		unsigned int j = bitrev(i, bits);
+		if (j > i)
 		{
-			unsigned int j = _bitrev[i * shift];
-			if (j > i)
-			{
-				//   Swap entries
-				const complex Temp(Data[j]);
-				Data[j] = Data[i];
-				Data[i] = Temp;
-			}
-		}
-	}
-	else
-	{
-		//   Swap position
-		unsigned int Target = 0;
-		//   Process all positions of input signal
-		for (unsigned int Position = 0; Position < N; ++Position)
-		{
-			//   Only for not yet swapped entries
-			if (Target > Position)
-			{
-				//   Swap entries
-				const complex Temp(Data[Target]);
-				Data[Target] = Data[Position];
-				Data[Position] = Temp;
-			}
-			//   Bit mask
-			unsigned int Mask = N;
-			//   While bit is set
-			while (Target & (Mask >>= 1))
-				//   Drop bit
-				Target &= ~Mask;
-			//   The current bit is 0 - set it
-			Target |= Mask;
+			const complex Temp(Data[j]);
+			Data[j] = Data[i];
+			Data[i] = Temp;
 		}
 	}
 }
@@ -312,6 +262,18 @@ void Fast4::Perform(complex *const Data, const unsigned int N, const bool Invers
 			}
 		}
 	}
+}
+
+//   FORWARD FFT using RBIT for bit-reversal (kept for API compatibility)
+bool Fast4::FFT_rbit(complex *const Data, const unsigned int N)
+{
+	return FFT(Data, N);
+}
+
+//   INVERSE FFT using RBIT for bit-reversal (kept for API compatibility)
+bool Fast4::IFFT_rbit(complex *const Data, const unsigned int N, const bool Scale /* = true */)
+{
+	return IFFT(Data, N, Scale);
 }
 
 //   Scaling of inverse FFT result
